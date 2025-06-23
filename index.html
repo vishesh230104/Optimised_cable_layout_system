@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cable Layout Optimizer</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .container { max-width: 1200px; margin: 2rem auto; }
+        .controls { background-color: white; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); padding: 20px; }
+        .btn-primary { background-color: #0d6efd; border: none; padding: 10px 20px; }
+        .btn-primary:hover { background-color: #0b5ed7; }
+        .result-box { background-color: #e9ecef; border-radius: 5px; padding: 15px; margin-top: 20px; }
+        #plot { width: 800px; height: 600px; margin: 0 auto; background: #fff; border-radius: 10px; }
+        #result { margin-top: 10px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="text-center mb-4">Cable Layout Optimizer</h1>
+    <div class="row">
+        <div class="col-md-8">
+            <div id="plot"></div>
+        </div>
+        <div class="col-md-4">
+            <div class="controls">
+                <h4>Instructions</h4>
+                <p>Click on the plot to add points. Each point represents a location where cables need to be connected.</p>
+                <div class="mb-3">
+                    <label for="costRate" class="form-label">Cost Rate (per unit length in ₹):</label>
+                    <input type="number" id="costRate" class="form-control" placeholder="Enter cost rate" min="0" step="0.01" value="1">
+                </div>
+                <button id="calculate" class="btn btn-primary w-100 mb-3">Calculate Optimal Layout</button>
+                <button id="clear" class="btn btn-secondary w-100 mb-3">Clear All Points</button>
+                <div class="result-box">
+                    <h5>Results</h5>
+                    <p>Total Cable Length: <span id="totalLength">0</span> units</p>
+                    <p>Total Cost: ₹<span id="totalCost">0</span></p>
+                    <p>Number of Points: <span id="pointCount">0</span></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="result"></div>
+</div>
+<script>
+let points = [];
+let mstEdges = [];
+let layout = {
+    margin: {t: 20, r: 20, l: 20, b: 20},
+    xaxis: {
+        zeroline: false,
+        showgrid: true,
+        gridcolor: '#cccccc',
+        gridwidth: 1,
+        range: [0, 1000] // Start with a fixed range
+    },
+    yaxis: {
+        zeroline: false,
+        showgrid: true,
+        gridcolor: '#cccccc',
+        gridwidth: 1,
+        range: [0, 800] // Start with a fixed range
+    },
+    annotations: []
+};
+
+// Initial empty plot
+Plotly.newPlot('plot', [], layout);
+
+// Add point on click anywhere in plot area (not just on existing points)
+document.getElementById('plot').addEventListener('mousedown', function(evt) {
+    if (evt.button !== 0) return;
+    if (evt.target.classList.contains('modebar-btn') || evt.target.classList.contains('modebar')) return;
+
+    let plot = document.getElementById('plot');
+    let bbox = plot.getBoundingClientRect();
+    let xaxis = plot._fullLayout.xaxis;
+    let yaxis = plot._fullLayout.yaxis;
+    let relX = evt.clientX - bbox.left;
+    let relY = evt.clientY - bbox.top;
+
+    // Check if click is inside the plotting area
+    if (relX < xaxis._offset || relX > xaxis._offset + xaxis._length ||
+        relY < yaxis._offset || relY > yaxis._offset + yaxis._length) return;
+
+    // Convert to data coordinates
+    let x = xaxis.range[0] + ((relX - xaxis._offset) / xaxis._length) * (xaxis.range[1] - xaxis.range[0]);
+    let y = yaxis.range[1] - ((relY - yaxis._offset) / yaxis._length) * (yaxis.range[1] - yaxis.range[0]);
+
+    // Check if click is on an existing point (within 10px)
+    let foundIdx = -1;
+    for (let i = 0; i < points.length; i++) {
+        let p = points[i];
+        let px = ((p[0] - xaxis.range[0]) / (xaxis.range[1] - xaxis.range[0])) * xaxis._length + xaxis._offset;
+        let py = ((yaxis.range[1] - p[1]) / (yaxis.range[1] - yaxis.range[0])) * yaxis._length + yaxis._offset;
+        if (Math.abs(px - relX) < 10 && Math.abs(py - relY) < 10) {
+            foundIdx = i;
+            break;
+        }
+    }
+
+    if (foundIdx !== -1) {
+        // Remove the node
+        points.splice(foundIdx, 1);
+        document.getElementById('pointCount').textContent = points.length;
+        redrawGraph();
+        return;
+    }
+
+    // Dynamically expand axes if needed
+    let expand = false;
+    if (x < layout.xaxis.range[0]) { layout.xaxis.range[0] = Math.floor(x) - 100; expand = true; }
+    if (x > layout.xaxis.range[1]) { layout.xaxis.range[1] = Math.ceil(x) + 100; expand = true; }
+    if (y < layout.yaxis.range[0]) { layout.yaxis.range[0] = Math.floor(y) - 100; expand = true; }
+    if (y > layout.yaxis.range[1]) { layout.yaxis.range[1] = Math.ceil(y) + 100; expand = true; }
+
+    points.push([x, y]);
+    document.getElementById('pointCount').textContent = points.length;
+    redrawGraph();
+
+    // If expanded, replot with new layout
+    if (expand) {
+        Plotly.relayout('plot', {
+            'xaxis.range': layout.xaxis.range,
+            'yaxis.range': layout.yaxis.range
+        });
+        redrawGraph();
+    }
+});
+
+// Clear all points
+document.getElementById('clear').addEventListener('click', () => {
+    points = [];
+    mstEdges = [];
+    document.getElementById('pointCount').textContent = '0';
+    document.getElementById('totalLength').textContent = '0';
+    document.getElementById('totalCost').textContent = '0';
+    Plotly.newPlot('plot', [], layout);
+});
+
+// Redraw graph with all edges and weights
+function redrawGraph(showMST=false, mstData=[]) {
+    let traces = [];
+    let annotations = [];
+    // Draw all edges with weights
+    for (let i = 0; i < points.length; i++) {
+        for (let j = i+1; j < points.length; j++) {
+            let weight = distance(points[i], points[j]);
+            traces.push({
+                x: [points[i][0], points[j][0]],
+                y: [points[i][1], points[j][1]],
+                mode: 'lines',
+                line: {color: 'gray', width: 1},
+                hoverinfo: 'none',
+                showlegend: false
+            });
+            // Edge label annotation
+            annotations.push({
+                x: (points[i][0] + points[j][0]) / 2,
+                y: (points[i][1] + points[j][1]) / 2,
+                text: weight.toFixed(2),
+                showarrow: false,
+                font: {color: 'black', size: 12},
+                bgcolor: 'white',
+                opacity: 0.8
+            });
+        }
+    }
+    // Draw MST edges (if any)
+    if (showMST && mstData.length > 0) {
+        mstData.forEach(edge => {
+            // Optional: Glow effect (draw a thick, semi-transparent line underneath)
+            traces.push({
+                x: [edge[0][0], edge[1][0]],
+                y: [edge[0][1], edge[1][1]],
+                mode: 'lines',
+                line: {color: 'rgba(255,0,0,0.3)', width: 16}, // Red glow
+                showlegend: false,
+                hoverinfo: 'none'
+            });
+            // Main highlighted MST edge
+            traces.push({
+                x: [edge[0][0], edge[1][0]],
+                y: [edge[0][1], edge[1][1]],
+                mode: 'lines',
+                line: {color: '#ff0000', width: 8}, // Bright red, thick
+                showlegend: false
+            });
+            // MST edge label annotation
+            annotations.push({
+                x: (edge[0][0] + edge[1][0]) / 2,
+                y: (edge[0][1] + edge[1][1]) / 2,
+                text: distance(edge[0], edge[1]).toFixed(2),
+                showarrow: false,
+                font: {color: '#ff0000', size: 16, weight: 'bold'},
+                bgcolor: 'white',
+                opacity: 1
+            });
+        });
+    }
+    // Draw nodes
+    traces.push({
+        x: points.map(p => p[0]),
+        y: points.map(p => p[1]),
+        mode: 'markers+text',
+        marker: {size: 12, color: '#0d6efd'},
+        text: points.map((_,i)=>i),
+        textposition: 'top center',
+        showlegend: false
+    });
+    let newLayout = {...layout, annotations: annotations};
+    Plotly.newPlot('plot', traces, newLayout);
+}
+
+// Calculate MST
+document.getElementById('calculate').addEventListener('click', async () => {
+    if (points.length < 2) {
+        alert('Please add at least 2 points');
+        return;
+    }
+    const costRate = parseFloat(document.getElementById('costRate').value);
+    if (isNaN(costRate) || costRate <= 0) {
+        alert('Please enter a valid cost rate');
+        return;
+    }
+    try {
+        const response = await fetch('/calculate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ points: points, cost_rate: costRate }),
+        });
+        const data = await response.json();
+        mstEdges = data.edges;
+        redrawGraph(true, mstEdges);
+        document.getElementById('totalLength').textContent = data.total_length.toFixed(2);
+        document.getElementById('totalCost').textContent = data.total_cost.toFixed(2);
+    } catch (error) {
+        console.error('Error:', error);
+        alert('An error occurred while calculating the optimal layout');
+    }
+});
+
+// Utility
+function distance(a, b) {
+    return Math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2);
+}
+</script>
+</body>
+</html>
